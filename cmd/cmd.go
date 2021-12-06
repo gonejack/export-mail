@@ -2,13 +2,14 @@ package cmd
 
 import (
 	"crypto/md5"
+	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math"
 	"mime"
 	"net/mail"
 	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -41,13 +42,13 @@ type options struct {
 	Username string `help:"Set Username."`
 	Password string `help:"Set Password."`
 
-	DisableTLS bool `name:"disable-tls" help:"Turn TLS off."`
-	Delete     bool `name:"also-remove" help:"Remove from server."`
-	Total      int  `name:"fetch-limit" help:"How many mails going to save, 0 for unlimit." default:"0"`
+	TLSDisabled  bool `name:"disable-tls" help:"Turn TLS off."`
+	ServerRemove bool `name:"server-remove" help:"Remove from server after export."`
 
-	SaveDir string `help:"Output directory." default:"./mail"`
-	Verbose bool   `short:"v" help:"Verbose printing."`
-	About   bool   `help:"About."`
+	Num int `name:"num" help:"How many mails going to save, 0 for no limit." default:"0"`
+
+	Verbose bool `short:"v" help:"Verbose printing."`
+	About   bool `help:"About."`
 }
 
 func (o *options) Parse() (err error) {
@@ -79,9 +80,6 @@ func (e *Exporter) Run() (err error) {
 	if e.Verbose {
 		logrus.SetLevel(logrus.DebugLevel)
 	}
-	if e.Total == 0 {
-		e.Total = math.MaxInt
-	}
 
 	return e.run()
 }
@@ -98,35 +96,53 @@ func (e *Exporter) run() (err error) {
 	}
 	logrus.Infof("found %d messages on server, total size %s", count, humanize.IBytes(uint64(size)))
 
-	id, n, total := count, 50, 0
-	for {
-		switch {
-		case id == 0:
-			return
-		case total >= e.Total:
-			return
-		case n == 0:
-			if e.Delete {
-				_ = e.disconnect()
-				err = e.connect()
-				if err != nil {
-					return fmt.Errorf("connect failed: %w", err)
-				}
-			}
-			n = 50
-		}
-		err = e.save(id)
-		if err != nil {
-			return
-		}
-		if e.Delete {
-			err = e.Dele(id)
-		}
-		if err != nil {
-			return
-		}
-		id, n, total = id-1, n-1, total+1
+	if e.Num == 0 {
+		e.Num = math.MaxInt
 	}
+
+	uids, err := e.Uidl(0)
+	if err != nil {
+		return fmt.Errorf("list message failed: %w", err)
+	}
+	saved := e.readUid()
+
+	n := 0
+	for i := len(uids) - 1; i >= 0; i-- {
+		id := uids[i]
+
+		if id.UID != "" {
+			_, exist := saved[id.UID]
+			if exist {
+				logrus.Debugf("messsage %d %s is saved before, skipped", id.ID, id.UID)
+				continue
+			}
+		}
+
+		err = e.save(id.ID)
+		if err != nil {
+			logrus.Errorf("save message %d failed: %s", id.ID, err)
+			continue
+		}
+
+		if e.ServerRemove {
+			err = e.Dele(id.ID)
+			if err != nil {
+				logrus.Errorf("remove message %d failed: %s", id.ID, err)
+				continue
+			}
+		}
+
+		if id.UID != "" {
+			saved[id.UID] = id.ID
+			e.saveUid(saved)
+		}
+
+		if n += 1; n >= e.Num {
+			return
+		}
+	}
+
+	return
 }
 func (e *Exporter) save(id int) (err error) {
 	log := logrus.WithField("messageId", id)
@@ -134,14 +150,13 @@ func (e *Exporter) save(id int) (err error) {
 	log.Debugf("read header")
 	msg, err := e.Top(id, 0)
 	if err != nil {
-		return fmt.Errorf("read message %d failed: %s", id, err)
+		return fmt.Errorf("read header failed: %w", err)
 	}
 	name := name(msg)
 	file := name + ".eml"
-	path := filepath.Join(e.SaveDir, file)
 	log.Debugf("read header done: %s", name)
 
-	_, err = os.Stat(path)
+	_, err = os.Stat(file)
 	if err == nil {
 		log.Warnf("file %s already exist, skipped", file)
 		return
@@ -155,13 +170,9 @@ func (e *Exporter) save(id int) (err error) {
 	log.Debugf("read body done")
 
 	log.Debugf("save message %s", file)
-	err = os.MkdirAll(e.SaveDir, 0766)
+	err = os.WriteFile(file, bf.Bytes(), 0766)
 	if err != nil {
-		return fmt.Errorf("save message %s failed: %s", path, err)
-	}
-	err = os.WriteFile(path, bf.Bytes(), 0766)
-	if err != nil {
-		return fmt.Errorf("save message %s failed: %s", path, err)
+		return fmt.Errorf("save message %s failed: %s", file, err)
 	}
 	log.Infof("save message %s done", file)
 
@@ -171,7 +182,7 @@ func (e *Exporter) connect() (err error) {
 	clt := pop3.New(pop3.Opt{
 		Host:       e.Host,
 		Port:       e.Port,
-		TLSEnabled: !e.DisableTLS,
+		TLSEnabled: !e.TLSDisabled,
 	})
 
 	logrus.Infof("connecting %s:%d", e.Host, e.Port)
@@ -192,22 +203,36 @@ func (e *Exporter) disconnect() (err error) {
 	logrus.Infof("disconnecting %s:%d", e.Host, e.Port)
 	return e.Quit()
 }
+func (e *Exporter) readUid() (dat map[string]int) {
+	dat = make(map[string]int)
+	f, err := os.Open("saved-uid.json")
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_ = json.NewDecoder(f).Decode(&dat)
+	return
+}
+func (e *Exporter) saveUid(dat map[string]int) {
+	f, err := os.Create("saved-uid.json")
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	enc := json.NewEncoder(f)
+	enc.SetIndent("", " ")
+	_ = enc.Encode(dat)
+	return
+}
 
 func name(msg *message.Entity) string {
-	wd := &mime.WordDecoder{
-		CharsetReader: func(charset string, input io.Reader) (io.Reader, error) {
-			enc, err := htmlindex.Get(charset)
-			if err != nil {
-				return nil, err
-			}
-			return transform.NewReader(input, enc.NewDecoder()), nil
-		},
-	}
-
 	from := msg.Header.Get("From")
-	dec, err := wd.DecodeHeader(from)
+	dec, err := rfc2047Decode(from)
 	if err == nil {
-		from = dec
+		addrs, _ := mail.ParseAddressList(dec)
+		if len(addrs) > 0 {
+			from = addrs[0].Address
+		}
 	}
 	from = strings.Trim(maxLen(from, 30), "<>")
 
@@ -219,7 +244,7 @@ func name(msg *message.Entity) string {
 	}
 
 	subj := msg.Header.Get("Subject")
-	dec, err = wd.DecodeHeader(subj)
+	dec, err = rfc2047Decode(subj)
 	if err == nil {
 		subj = dec
 	}
@@ -254,4 +279,41 @@ func maxLen(str string, max int) string {
 }
 func strmd5(str string) string {
 	return fmt.Sprintf("%x", md5.Sum([]byte(str)))
+}
+func rfc2047Decode(word string) (string, error) {
+	match := strings.HasPrefix(word, "=?") && strings.Contains(word, "?=")
+	if !match {
+		return word, nil
+	}
+	switch {
+	case strings.Contains(word, "?Q?"):
+	case strings.Contains(word, "?q?"):
+	case strings.Contains(word, "?B?"):
+	case strings.Contains(word, "?b?"):
+	default:
+		return word, nil
+	}
+
+	parts := strings.Split(word, "?")
+	if len(parts) < 5 {
+		return word, nil
+	}
+
+	if parts[2] == "B" && strings.HasSuffix(parts[3], "=") {
+		b64s := strings.TrimRight(parts[3], "=")
+		text, _ := base64.RawURLEncoding.DecodeString(b64s)
+		parts[3] = base64.StdEncoding.EncodeToString(text)
+	}
+
+	word = strings.Join(parts, "?")
+	dec := &mime.WordDecoder{
+		CharsetReader: func(charset string, input io.Reader) (io.Reader, error) {
+			enc, err := htmlindex.Get(charset)
+			if err != nil {
+				return nil, err
+			}
+			return transform.NewReader(input, enc.NewDecoder()), nil
+		},
+	}
+	return dec.DecodeHeader(word)
 }
