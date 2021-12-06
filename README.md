@@ -23,7 +23,7 @@ Flags:
       --password=STRING    Set Password.
       --disable-tls        Turn TLS off.
       --server-remove      Remove from server after export.
-      --num=0              How many mails going to save, 0 for no limit.
+      --num=9999           How many mails going to save.
   -v, --verbose            Verbose printing.
       --about              About.
 ```

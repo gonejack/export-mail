@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"mime"
 	"net/mail"
 	"os"
@@ -45,7 +44,7 @@ type options struct {
 	TLSDisabled  bool `name:"disable-tls" help:"Turn TLS off."`
 	ServerRemove bool `name:"server-remove" help:"Remove from server after export."`
 
-	Num int `name:"num" help:"How many mails going to save, 0 for no limit." default:"0"`
+	Num int `name:"num" help:"How many mails going to save." default:"9999"`
 
 	Verbose bool `short:"v" help:"Verbose printing."`
 	About   bool `help:"About."`
@@ -95,10 +94,6 @@ func (e *Exporter) run() (err error) {
 		return
 	}
 	logrus.Infof("found %d messages on server, total size %s", count, humanize.IBytes(uint64(size)))
-
-	if e.Num == 0 {
-		e.Num = math.MaxInt
-	}
 
 	uids, err := e.Uidl(0)
 	if err != nil {
