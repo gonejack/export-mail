@@ -16,15 +16,14 @@ This command line tool exports .eml files from POP3 account.
 ```
 ```
 Flags:
-  -h, --help                 Show context-sensitive help.
-      --host=STRING          Set pop3 host.
-      --port=995             Set pop3 port.
-      --password=STRING      Set Password.
-      --username=STRING      Set Username.
-      --enable-tls           Set pop3 TLS enabled.
-      --delete               Delete exported mails from server.
-      --save-dir="./mail"    Set save directory.
-      --total=0              How many to get.
-  -v, --verbose              Verbose printing.
-      --about                About.
+  -h, --help               Show context-sensitive help.
+      --host=STRING        Set pop3 host.
+      --port=995           Set pop3 port.
+      --username=STRING    Set Username.
+      --password=STRING    Set Password.
+      --disable-tls        Turn TLS off.
+      --server-remove      Remove from server after export.
+      --num=0              How many mails going to save, 0 for no limit.
+  -v, --verbose            Verbose printing.
+      --about              About.
 ```
