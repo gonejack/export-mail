@@ -238,7 +238,7 @@ func name(msg *message.Entity) string {
 
 	date := date(msg).Format("2006-01-02 15:04:05")
 
-	msd := strmd5(msg.Header.Get("Message-Id"))
+	msd := md5s(msg.Header.Get("Message-Id"))
 	if len(msd) > 5 {
 		msd = msd[:5]
 	}
@@ -277,7 +277,7 @@ func maxLen(str string, max int) string {
 	}
 	return string(rs)
 }
-func strmd5(str string) string {
+func md5s(str string) string {
 	return fmt.Sprintf("%x", md5.Sum([]byte(str)))
 }
 func rfc2047Decode(word string) (string, error) {
